@@ -455,12 +455,8 @@ int main(int argc, char* argv[]) {
     lib_search_paths = jv_array_concat(lib_search_paths,jv_string_split(jv_string(penv),jv_string(PATH_ENV_SEPARATOR)));
 #undef PATH_ENV_SEPARATOR
   } else if (jv_get_kind(lib_search_paths) == JV_KIND_NULL) {
-    // Use compiled-in default JQ_LIBRARY_PATH
-#ifdef WIN32
-    lib_search_paths = JV_ARRAY(jv_string("~/.jq"), jv_string("$ORIGIN/lib"));
-#else
-    lib_search_paths = JV_ARRAY(jv_string("~/.jq"), jv_string("$ORIGIN/../lib/jq"));
-#endif
+    // Default JQ_LIBRARY_PATH:
+    lib_search_paths = JV_ARRAY(jv_string("~/.jq"), jv_string("$ORIGIN/../lib/jq"), jv_string("$ORIGIN/lib"));
   }
   jq_set_attr(jq, jv_string("JQ_LIBRARY_PATH"), lib_search_paths);
 
