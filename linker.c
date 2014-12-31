@@ -206,7 +206,7 @@ static int process_dependencies(jq_state *jq, jv jq_origin, jv lib_origin, block
     // dep is now freed; do not reuse
 
     // find_lib does a lot of work that could be cached...
-    jv resolved = find_lib(jq, relpath, search, is_data ? ".json" : ".jq", jq_origin, lib_origin);
+    jv resolved = find_lib(jq, relpath, search, is_data ? ".json" : ".jq", jv_copy(jq_origin), jv_copy(lib_origin));
     // XXX ...move the rest of this into a callback.
     if (!jv_is_valid(resolved)) {
       jv emsg = jv_invalid_get_msg(resolved);
@@ -295,9 +295,11 @@ out:
 
 // FIXME It'd be nice to have an option to search the same search path
 // as we do in process_dependencies.
-jv load_module_meta(jq_state *jq, jv modname) {
+jv load_module_meta(jq_state *jq, jv mod_relpath) {
   // We can't know the caller's origin; we could though, if it was passed in
-  jv lib_path = find_lib(jq, validate_relpath(modname), jv_array(), ".jq", jq_get_jq_origin(jq), jv_null());
+  jv lib_path = find_lib(jq, validate_relpath(mod_relpath), jq_get_lib_dirs(jq), ".jq", jq_get_jq_origin(jq), jv_null());
+  if (!jv_is_valid(lib_path))
+    return lib_path;
   jv meta = jv_null();
   jv data = jv_load_file(jv_string_value(lib_path), 1);
   if (jv_is_valid(data)) {
