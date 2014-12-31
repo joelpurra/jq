@@ -272,12 +272,12 @@ int main(int argc, char* argv[]) {
         if (jv_get_kind(lib_search_paths) == JV_KIND_NULL)
           lib_search_paths = jv_array();
         if (argv[i][2] != 0) { // -Lname (faster check than strlen)
-            lib_search_paths = jv_array_concat(JV_ARRAY(jv_string(argv[i]+2)), lib_search_paths);
+            lib_search_paths = jv_array_append(lib_search_paths, jv_string(argv[i]+2));
         } else if (i >= argc - 1) {
           fprintf(stderr, "-L takes a parameter: (e.g. -L /search/path or -L/search/path)\n");
           die();
         } else {
-          lib_search_paths = jv_array_concat(JV_ARRAY(jv_string(argv[i+1])), lib_search_paths);
+          lib_search_paths = jv_array_append(lib_search_paths, jv_string(argv[i+1]));
           i++;
         }
         continue;
