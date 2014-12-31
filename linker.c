@@ -25,31 +25,67 @@ static int load_library(jq_state *jq, jv lib_path, int is_data, int raw,
                         const char *as, block *out_block,
                         struct lib_loading_state *lib_state);
 
+
 // Given a lib_path to search first, creates a chain of search paths
 // in the following order:
 // 1. lib_path
-// 2. -L paths passed in on the command line (from jq_state*)
-// 3. JQ_LIBRARY_PATH environment variable
-jv build_lib_search_chain(jq_state *jq, jv search_path) {
+// 2. -L paths passed in on the command line (from jq_state*) or builtin list
+static jv build_lib_search_chain(jq_state *jq, jv search_path, jv jq_origin, jv lib_origin) {
   assert(jv_get_kind(search_path) == JV_KIND_ARRAY);
   jv expanded = jv_array();
+  jv expanded_elt;
   jv_array_foreach(search_path, i, path) {
-    path = expand_path(path);
-    if (jv_is_valid(path))
-      expanded = jv_array_append(expanded, expand_path(path));
-    else
-      jv_free(path);
+    if (strcmp(".",jv_string_value(path)) == 0) {
+      expanded_elt = jv_copy(path);
+    } else if (jv_get_kind(lib_origin) == JV_KIND_STRING &&
+               strncmp("./", jv_string_value(path),sizeof("./")-1) == 0) {
+      expanded_elt = jv_string_fmt("%s/%s",
+                               jv_string_value(lib_origin),
+                               jv_string_value(path) + sizeof ("./") - 1);
+    } else if (strncmp("$ORIGIN/",jv_string_value(path),sizeof("$ORIGIN/")-1) == 0) {
+      expanded_elt = jv_string_fmt("%s/%s",
+                               jv_string_value(jq_origin),
+                               jv_string_value(path) + sizeof ("$ORIGIN/") - 1);
+    } else {
+      expanded_elt = expand_path(path);
+      if (!jv_is_valid(expanded_elt)) {
+        jv_free(search_path);
+        jv_free(expanded);
+        jv_free(path);
+        return expanded_elt;
+      }
+      path = jv_invalid();
+    }
+    expanded = jv_array_append(expanded, expanded_elt);
+    jv_free(path);
   }
+  jv_free(jq_origin);
+  jv_free(lib_origin);
   jv_free(search_path);
-  expanded = jv_array_concat(expanded, jq_get_lib_dirs(jq));
   return expanded;
 }
 
-static jv name2relpath(jv name) {
-  jv components = jv_string_split(jv_copy(name), jv_string("::"));
+// Doesn't actually check that name not be an absolute path; we could
+// just always prepend "./"!
+static jv validate_relpath(jv name) {
+  const char *s = jv_string_value(name);
+  if (strchr(s, '\\')) {
+    jv res = jv_invalid_with_msg(jv_string_fmt("Modules must be named by relative paths using '/', not '\\' (%s)", s));
+    jv_free(name);
+    return res;
+  }
+  jv components = jv_string_split(jv_copy(name), jv_string("/"));
   jv rp = jv_array_get(jv_copy(components), 0);
   components = jv_array_slice(components, 1, jv_array_length(jv_copy(components)));
   jv_array_foreach(components, i, x) {
+    if (!strcmp(jv_string_value(x), "..")) {
+      jv_free(x);
+      jv_free(rp);
+      jv_free(components);
+      jv res = jv_invalid_with_msg(jv_string_fmt("Relative paths to modules may not traverse to parent directories (%s)", s));
+      jv_free(name);
+      return res;
+    }
     if (i > 0 && jv_equal(jv_copy(x), jv_array_get(jv_copy(components), i - 1))) {
       jv_free(x);
       jv_free(rp);
@@ -66,22 +102,39 @@ static jv name2relpath(jv name) {
   return rp;
 }
 
-static jv find_lib(jq_state *jq, jv lib_name, jv lib_search_path, const char *suffix) {
-  assert(jv_get_kind(lib_search_path) == JV_KIND_ARRAY);
-  assert(jv_get_kind(lib_name) == JV_KIND_STRING);
-
-  jv rel_path = name2relpath(jv_copy(lib_name));
-  if (!jv_is_valid(rel_path)) {
-    jv_free(lib_name);
-    return rel_path;
+// Assumes name has been validated
+static jv jv_basename(jv name) {
+  const char *s = jv_string_value(name);
+  const char *p = strchr(s, '/');
+  if (!p)
+    return name;
+  if ((p - s) > INT_MAX) {
+    jv_free(name);
+    return jv_invalid_with_msg(jv_string_fmt("Module path is too long"));
   }
+  jv res = jv_string_fmt("%.*s", (int)(p - s), s);
+  jv_free(name);
+  return res;
+}
+
+// Asummes validated relative path to module
+static jv find_lib(jq_state *jq, jv rel_path, jv search, const char *suffix, jv jq_origin, jv lib_origin) {
+  if (jv_get_kind(search) != JV_KIND_ARRAY)
+    return jv_invalid_with_msg(jv_string_fmt("Module search path must be an array"));
+  if (jv_get_kind(rel_path) != JV_KIND_STRING)
+    return jv_invalid_with_msg(jv_string_fmt("Module path must be a string"));
 
   struct stat st;
   int ret;
 
-  jv lib_search_paths = build_lib_search_chain(jq, lib_search_path);
+  // Ideally we should cache this somewhere
+  search = build_lib_search_chain(jq, search, jq_origin, lib_origin);
 
-  jv_array_foreach(lib_search_paths, i, spath) {
+  jv bname = jv_basename(rel_path);
+  if (!jv_is_valid(rel_path))
+    return bname;
+
+  jv_array_foreach(search, i, spath) {
     if (jv_get_kind(spath) == JV_KIND_NULL) {
       jv_free(spath);
       break;
@@ -91,6 +144,7 @@ static jv find_lib(jq_state *jq, jv lib_name, jv lib_search_path, const char *su
       jv_free(spath);
       continue; /* XXX report non-strings in search path?? */
     }
+    // Try .../module/last/component.jq
     jv testpath = jq_realpath(jv_string_fmt("%s/%s%s",
                                             jv_string_value(spath),
                                             jv_string_value(rel_path),
@@ -98,34 +152,34 @@ static jv find_lib(jq_state *jq, jv lib_name, jv lib_search_path, const char *su
     ret = stat(jv_string_value(testpath),&st);
     if (ret == -1 && errno == ENOENT) {
       jv_free(testpath);
+      // Try .../module/last/component/component.jq
       testpath = jq_realpath(jv_string_fmt("%s/%s/%s%s",
                                            jv_string_value(spath),
                                            jv_string_value(rel_path),
-                                           jv_string_value(lib_name),
+                                           jv_string_value(bname),
                                            suffix));
       ret = stat(jv_string_value(testpath),&st);
     }
     if (ret == 0) {
       jv_free(spath);
       jv_free(rel_path);
-      jv_free(lib_name);
-      jv_free(lib_search_paths);
+      jv_free(search);
       return testpath;
     }
     jv_free(testpath);
     jv_free(spath);
   }
-  jv output = jv_invalid_with_msg(jv_string_fmt("module not found: %s", jv_string_value(lib_name)));
+  jv output = jv_invalid_with_msg(jv_string_fmt("module not found: %s", jv_string_value(rel_path)));
   jv_free(rel_path);
-  jv_free(lib_name);
-  jv_free(lib_search_paths);
+  jv_free(search);
   return output;
 }
 
-static jv default_search(jv value) {
+static jv default_search(jq_state *jq, jv value) {
   if (!jv_is_valid(value)) {
+    // dependent didn't say; prepend . to system search path listj
     jv_free(value);
-    return JV_ARRAY(jv_string("."), jv_string("$ORIGIN"));
+    return jv_array_concat(JV_ARRAY(jv_string(".")), jq_get_lib_dirs(jq));
   }
   if (jv_get_kind(value) != JV_KIND_ARRAY)
     return JV_ARRAY(value);
@@ -145,33 +199,17 @@ static int process_dependencies(jq_state *jq, jv jq_origin, jv lib_origin, block
     if (jv_get_kind(v) == JV_KIND_TRUE)
       raw = 1;
     jv_free(v);
-    jv name = jv_object_get(jv_copy(dep), jv_string("relpath"));
+    jv relpath = validate_relpath(jv_object_get(jv_copy(dep), jv_string("relpath")));
     jv as = jv_object_get(jv_copy(dep), jv_string("as"));
     assert(jv_is_valid(as) && jv_get_kind(as) == JV_KIND_STRING);
-    jv search = default_search(jv_object_get(dep, jv_string("search")));
+    jv search = default_search(jq, jv_object_get(dep, jv_string("search")));
     // dep is now freed; do not reuse
 
-    jv_array_foreach(search, k, search_elt) {
-      if (strcmp(".",jv_string_value(search_elt)) == 0) {
-        jv tsearch = jv_copy(lib_origin);
-        search = jv_array_set(search, k, tsearch);
-      } else if (strncmp("./",jv_string_value(search_elt),sizeof("./")-1) == 0) {
-        jv tsearch = jv_string_fmt("%s/%s",
-                                   jv_string_value(lib_origin),
-                                   jv_string_value(search_elt) + sizeof ("./") - 1);
-        search = jv_array_set(search, k, tsearch);
-      } else if (strncmp("$ORIGIN/",jv_string_value(search_elt),sizeof("$ORIGIN/")-1) == 0) {
-        jv tsearch = jv_string_fmt("%s/%s",
-                                   jv_string_value(jq_origin),
-                                   jv_string_value(search_elt) + sizeof ("$ORIGIN/") - 1);
-        search = jv_array_set(search, k, tsearch);
-      }
-      jv_free(search_elt);
-    }
-    jv lib_path = find_lib(jq, jv_copy(name), search, is_data ? ".json" : ".jq");
+    // find_lib does a lot of work that could be cached...
+    jv resolved = find_lib(jq, relpath, search, is_data ? ".json" : ".jq", jq_origin, lib_origin);
     // XXX ...move the rest of this into a callback.
-    if (!jv_is_valid(lib_path)) {
-      jv emsg = jv_invalid_get_msg(lib_path);
+    if (!jv_is_valid(resolved)) {
+      jv emsg = jv_invalid_get_msg(resolved);
       jq_report_error(jq, jv_string_fmt("jq: error: %s\n",jv_string_value(emsg)));
       jv_free(emsg);
       jv_free(as);
@@ -182,23 +220,22 @@ static int process_dependencies(jq_state *jq, jv jq_origin, jv lib_origin, block
     }
     uint64_t state_idx = 0;
     for (; state_idx < lib_state->ct; ++state_idx) {
-      if (strcmp(lib_state->names[state_idx],jv_string_value(lib_path)) == 0)
+      if (strcmp(lib_state->names[state_idx],jv_string_value(resolved)) == 0)
         break;
     }
     if (state_idx < lib_state->ct) { // Found
-      jv_free(lib_path);
+      jv_free(resolved);
       // Bind the library to the program
       bk = block_bind_library(lib_state->defs[state_idx], bk, OP_IS_CALL_PSEUDO, jv_string_value(as));
     } else { // Not found.   Add it to the table before binding.
       block dep_def_block = gen_noop();
-      nerrors += load_library(jq, lib_path, is_data, raw, jv_string_value(as), &dep_def_block, lib_state);
-      // lib_path has been freed
+      nerrors += load_library(jq, resolved, is_data, raw, jv_string_value(as), &dep_def_block, lib_state);
+      // resolved has been freed
       if (nerrors == 0) {
         // Bind the library to the program
         bk = block_bind_library(dep_def_block, bk, OP_IS_CALL_PSEUDO, jv_string_value(as));
       }
     }
-    jv_free(name);
     jv_free(as);
   }
   jv_free(lib_origin);
@@ -259,7 +296,8 @@ out:
 // FIXME It'd be nice to have an option to search the same search path
 // as we do in process_dependencies.
 jv load_module_meta(jq_state *jq, jv modname) {
-  jv lib_path = find_lib(jq, modname, jv_array(), ".jq");
+  // We can't know the caller's origin; we could though, if it was passed in
+  jv lib_path = find_lib(jq, validate_relpath(modname), jv_array(), ".jq", jq_get_jq_origin(jq), jv_null());
   jv meta = jv_null();
   jv data = jv_load_file(jv_string_value(lib_path), 1);
   if (jv_is_valid(data)) {
