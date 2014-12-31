@@ -272,12 +272,12 @@ int main(int argc, char* argv[]) {
         if (jv_get_kind(lib_search_paths) == JV_KIND_NULL)
           lib_search_paths = jv_array();
         if (argv[i][2] != 0) { // -Lname (faster check than strlen)
-            lib_search_paths = jv_array_append(lib_search_paths, jv_string(argv[i]+2));
+            lib_search_paths = jv_array_concat(JV_ARRAY(jv_string(argv[i]+2)), lib_search_paths);
         } else if (i >= argc - 1) {
           fprintf(stderr, "-L takes a parameter: (e.g. -L /search/path or -L/search/path)\n");
           die();
         } else {
-          lib_search_paths = jv_array_append(lib_search_paths, jv_string(argv[i+1]));
+          lib_search_paths = jv_array_concat(JV_ARRAY(jv_string(argv[i+1])), lib_search_paths);
           i++;
         }
         continue;
@@ -444,19 +444,11 @@ int main(int argc, char* argv[]) {
   if (options & COLOUR_OUTPUT) dumpopts |= JV_PRINT_COLOUR;
   if (options & NO_COLOUR_OUTPUT) dumpopts &= ~JV_PRINT_COLOUR;
 
-  char *penv = getenv("JQ_LIBRARY_PATH");
-  if (penv && jv_get_kind(lib_search_paths) == JV_KIND_NULL) {
-    // Use $JQ_LIBRARY_PATH
-#ifdef WIN32
-#define PATH_ENV_SEPARATOR ";"
-#else
-#define PATH_ENV_SEPARATOR ":"
-#endif
-    lib_search_paths = jv_array_concat(lib_search_paths,jv_string_split(jv_string(penv),jv_string(PATH_ENV_SEPARATOR)));
-#undef PATH_ENV_SEPARATOR
-  } else if (jv_get_kind(lib_search_paths) == JV_KIND_NULL) {
-    // Default JQ_LIBRARY_PATH:
-    lib_search_paths = JV_ARRAY(jv_string("~/.jq"), jv_string("$ORIGIN/../lib/jq"), jv_string("$ORIGIN/lib"));
+  if (jv_get_kind(lib_search_paths) == JV_KIND_NULL) {
+    // Default search path list
+    lib_search_paths = JV_ARRAY(jv_string("~/.jq"),
+                                jv_string("$ORIGIN/../lib/jq"),
+                                jv_string("$ORIGIN/lib"));
   }
   jq_set_attr(jq, jv_string("JQ_LIBRARY_PATH"), lib_search_paths);
 

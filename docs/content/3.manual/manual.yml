@@ -185,8 +185,9 @@ sections:
 
       * `-Ldirectory` / `-L directory`:
 
-        Add `directory` to the search list for modules.  See the section
-        on modules below.
+        Prepend `directory` to the search list for modules.  If this
+        option is used then no builtin search list is used.  See the
+        section on modules below.
 
       * `-e` / `--exit-status`:
 
@@ -2496,12 +2497,8 @@ sections:
       the default is appended.
 
       The default search path is the search path given to the `-L`
-      command-line option, else the "$JQ_LIBRARY_PATH", if set in the
-      environment, else `["~/.jq", "$ORIGIN/../lib/jq",
+      command-line option, else `["~/.jq", "$ORIGIN/../lib/jq",
       "$ORIGIN/../lib"]`.
-
-      The `-L` argument's and "$JQ_LIBRARY_PATH" environment variable's
-      string values are split on ":" on Unix, or ";" on Windows.
 
       Null and empty string path elements terminate search path
       processing.
