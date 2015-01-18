@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include "compile.h"
 #include "jv.h"
 #include "jq.h"
@@ -421,11 +422,28 @@ int main(int argc, char* argv[]) {
       ret = 2;
       goto out;
     }
-    jq_set_attr(jq, jv_string("PROGRAM_ORIGIN"), jq_realpath(jv_string(dirname(program_origin))));
+
+    jq_set_attr(jq, jv_string("PROGRAM_ORIGIN_FILE"), jq_realpath(jv_string(program_origin)));
+
+    // If the input isn't a real file on disk, but a FIFO file, use $PWD as PROGRAM_ORIGIN.
+    // TODO: check if/how this affects those who use `mkfifo` named pipes.
+    struct stat st;
+    int stat_ret;
+    stat_ret = stat(program_origin, &st);
+    if (stat_ret >= 0 && S_ISFIFO(st.st_mode) == 0) {
+      jq_set_attr(jq, jv_string("PROGRAM_FROM_ACTUAL_FILE"), jv_true());
+      jq_set_attr(jq, jv_string("PROGRAM_ORIGIN"), jq_realpath(jv_string(dirname(program_origin))));
+    } else {
+      jq_set_attr(jq, jv_string("PROGRAM_FROM_ACTUAL_FILE"), jv_false());
+      jq_set_attr(jq, jv_string("PROGRAM_ORIGIN"), jq_realpath(jv_string("."))); // XXX is this good?
+    }
+
     compiled = jq_compile_args(jq, jv_string_value(data), program_arguments);
     free(program_origin);
     jv_free(data);
   } else {
+    jq_set_attr(jq, jv_string("PROGRAM_ORIGIN_FILE"), jv_null());
+    jq_set_attr(jq, jv_string("PROGRAM_FROM_ACTUAL_FILE"), jv_false());
     jq_set_attr(jq, jv_string("PROGRAM_ORIGIN"), jq_realpath(jv_string("."))); // XXX is this good?
     compiled = jq_compile_args(jq, program, program_arguments);
   }
