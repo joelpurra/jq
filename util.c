@@ -95,65 +95,56 @@ jv get_home() {
 jv jq_find_package_root(jv start_path) {
   // TODO: keep the string ".jq" elsewhere.
   jv jq_metadata_subfolder = jv_string(".jq");
-  char *current_path = strdup(jv_string_value(start_path));
+  jv current_path = jv_copy(start_path);
   struct stat st;
   int stat_ret;
-  int dirname_calls = 0;
   int done = 0;
   jv ret;
 
-  stat_ret = stat(current_path, &st);
+  stat_ret = stat(jv_string_value(current_path), &st);
 
   if (stat_ret < 0 && errno == ENOENT) {
     ret = jv_invalid_with_msg(jv_string_fmt("Could not find package root from non-existent start path '%s' ('%s')", jv_string_value(start_path), jv_string_value(jq_realpath(start_path))));
-    free(current_path);
   } else {
     if (S_ISDIR(st.st_mode) == 0) {
-      // Get parent folder path. (These following lines have been duplicated elsewhere in this function.)
-      char *tmp_path = dirname(current_path);
-      dirname_calls++;
-      if (dirname_calls == 1) {
-        // Both dirname() and basename() return pointers to null-terminated strings. (Do not pass these pointers to free(3).)
-        // This means free(current_path) should only be called before being replaced for the first time, and never on tmp_path.
-        free(current_path);
-      }
-      current_path = tmp_path;
+      // It's a file, not a directory - get the containing directory instead.
+      char *tmp_path = strdup(jv_string_value(current_path));
+      jv_free(current_path);
+      current_path = jv_string(strdup(dirname(tmp_path)));
+      free(tmp_path);
     }
 
     do {
       // TODO: detect windows disk/file system roots such as "C:\".
-      if (strcmp(current_path,"/") == 0){
+      if (strcmp(jv_string_value(current_path),"/") == 0){
         break;
       }
 
       // Check if ${current or parent dir}/.jq/ directory exists.
       jv jq_metadata_subfolder_path = jv_string_fmt("%s%s%s",
-                                                 current_path,
+                                                 jv_string_value(current_path),
                                                  // TODO: detect windows disk/file system roots such as "C:\".
-                                                 strcmp(current_path,"/") == 0 ? "" : "/",
+                                                 strcmp(jv_string_value(current_path),"/") == 0 ? "" : "/",
                                                  jv_string_value(jq_metadata_subfolder));
       stat_ret = stat(jv_string_value(jq_metadata_subfolder_path), &st);
       jv_free(jq_metadata_subfolder_path);
       if (stat_ret == 0 && S_ISDIR(st.st_mode) != 0) {
         // Package root found.
         done = 1;
-        ret = jv_string(current_path);
+        ret = current_path;
       } else {
-        // Get parent folder path. (These following lines have been duplicated elsewhere in this function.)
-        char *tmp_path = dirname(current_path);
-        dirname_calls++;
-        if (dirname_calls == 1) {
-          // Both dirname() and basename() return pointers to null-terminated strings. (Do not pass these pointers to free(3).)
-          // This means free(current_path) should only be called before being replaced for the first time, and never on tmp_path.
-          free(current_path);
-        }
-        current_path = tmp_path;
+        // Get parent folder path.
+        char *tmp_path = strdup(jv_string_value(current_path));
+        jv_free(current_path);
+        current_path = jv_string(strdup(dirname(tmp_path)));
+        free(tmp_path);
       }
     } while(done != 1);
   }
 
   if (jv_get_kind(ret) != JV_KIND_STRING) {
-    ret = jv_invalid_with_msg(jv_string_fmt("Could not find package root from start path '%s' ('%s')", jv_string_value(start_path), jv_string_value(jq_realpath(start_path))));
+      ret = jv_invalid_with_msg(jv_string_fmt("Could not find package root from start path '%s' ('%s')", jv_string_value(start_path), jv_string_value(jq_realpath(start_path))));
+      jv_free(current_path);
   }
 
   jv_free(jq_metadata_subfolder);
