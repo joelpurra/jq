@@ -396,6 +396,29 @@ int main(int argc, char* argv[]) {
   else
     jq_set_attr(jq, jv_string("VERSION_DIR"), jv_string_fmt("%.*s-master", (int)(strchr(JQ_VERSION, '-') - JQ_VERSION), JQ_VERSION));
 
+  if (!program && !(options & FROM_FILE)) {
+    // No inline filter and no -f option -- let's see if we're inside a
+    // package and can use the main package jq file.
+    jv package_root = jq_find_package_root(jq_realpath(jv_string(".")));
+    if (jv_get_kind(package_root) == JV_KIND_STRING) {
+      // We're inside a package, use the main package jq file.
+      // TODO: use `.main` in `P/jq.json` for this path.
+      jv mainJqFile = jv_string("jq/main.jq");
+      jv mainJqFileFullPath = jv_string_fmt("%s/%s", jv_string_value(package_root), jv_string_value(mainJqFile));
+      program = strdup(jv_string_value(mainJqFileFullPath));
+      // Indicate that we're now loading from a file.
+      options |= FROM_FILE;
+      jv_free(mainJqFileFullPath);
+      jv_free(mainJqFile);
+    } else {
+      jv_free(package_root);
+      fprintf(stderr, "%s: %s\n", progname, "no filter given, no jq file given, no package root found.");
+      ret = 2;
+      goto out;
+    }
+    jv_free(package_root);
+  }
+
 #if (!defined(WIN32) && defined(HAVE_ISATTY)) || defined(HAVE__ISATTY)
 
 #if defined(HAVE__ISATTY) && defined(isatty)
